@@ -1,0 +1,40 @@
+version: '3.9'
+
+services:
+  postgres:
+    ports: []
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+
+  redis:
+    ports: []
+
+  minio:
+    ports: []
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    volumes: []
+    command: node dist/main
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes: []
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.ssl.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      - backend
+      - frontend

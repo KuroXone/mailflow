@@ -1,0 +1,627 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  SUPER_ADMIN
+  USER
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum PlanTier {
+  FREE
+  STARTER
+  GROWTH
+  PRO
+  ENTERPRISE
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  SENT
+  PAUSED
+  CANCELLED
+}
+
+enum ContactStatus {
+  SUBSCRIBED
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINED
+  CLEANED
+}
+
+enum DomainStatus {
+  PENDING
+  PARTIAL
+  ACTIVE
+  ERROR
+}
+
+enum EmailLogStatus {
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  COMPLAINED
+  FAILED
+  UNSUBSCRIBED
+}
+
+enum AutomationStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum TriggerType {
+  CONTACT_SUBSCRIBED
+  CONTACT_TAG_ADDED
+  FORM_SUBMITTED
+  DATE_BASED
+  CAMPAIGN_OPENED
+  CAMPAIGN_CLICKED
+  API_TRIGGER
+  SEGMENT_ENTERED
+}
+
+enum SubStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  INCOMPLETE
+}
+
+// ─── Users & Auth ─────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  name            String
+  avatarUrl       String?
+  timezone        String?
+  emailVerified   Boolean   @default(false)
+  verifyToken     String?
+  verifyTokenExp  DateTime?
+  resetToken      String?
+  resetTokenExp   DateTime?
+  role            UserRole  @default(USER)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships     OrgMember[]
+  refreshTokens   RefreshToken[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  userAgent String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@map("refresh_tokens")
+}
+
+// ─── Multi-tenant Organizations ───────────────────────────────────────────────
+
+model Organization {
+  id           String    @id @default(cuid())
+  name         String
+  slug         String    @unique
+  logo         String?
+  website      String?
+  plan         PlanTier  @default(FREE)
+  emailsSent   Int       @default(0)
+  emailsLimit  Int       @default(500)
+  contactsCount Int      @default(0)
+  contactsLimit Int      @default(500)
+  customDomain String?
+  whitelabel   Boolean   @default(false)
+  stripeCustomerId String?
+  billingEmail String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  members      OrgMember[]
+  campaigns    Campaign[]
+  contacts     Contact[]
+  lists        ContactList[]
+  segments     Segment[]
+  domains      Domain[]
+  smtpConfigs  SmtpConfig[]
+  templates    EmailTemplate[]
+  automations  Automation[]
+  apiKeys      ApiKey[]
+  subscriptions Subscription[]
+  auditLogs    AuditLog[]
+  forms        Form[]
+
+  @@map("organizations")
+}
+
+model OrgMember {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String
+  role      OrgRole  @default(MEMBER)
+  invitedBy String?
+  joinedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@map("org_members")
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  orgId       String
+  email       String
+  role        OrgRole   @default(MEMBER)
+  token       String    @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  invitedById String?
+  createdAt   DateTime  @default(now())
+
+  @@map("invitations")
+}
+
+// ─── Campaigns ────────────────────────────────────────────────────────────────
+
+model Campaign {
+  id              String         @id @default(cuid())
+  orgId           String
+  org             Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name            String
+  subject         String
+  previewText     String?
+  fromName        String
+  fromEmail       String
+  replyTo         String?
+  htmlContent     String         @db.Text
+  textContent     String?        @db.Text
+  jsonContent     Json?
+  templateId      String?
+  status          CampaignStatus @default(DRAFT)
+  scheduledAt     DateTime?
+  sentAt          DateTime?
+  completedAt     DateTime?
+  listIds         String[]       @default([])
+  segmentIds      String[]       @default([])
+  excludeListIds  String[]       @default([])
+  totalRecipients Int            @default(0)
+  trackOpens      Boolean        @default(true)
+  trackClicks     Boolean        @default(true)
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  smtpConfigId    String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  analytics       CampaignAnalytics?
+  emailLogs       EmailLog[]
+  abTests         AbTest[]
+  template        EmailTemplate? @relation(fields: [templateId], references: [id])
+
+  @@index([orgId, status])
+  @@index([orgId, createdAt])
+  @@map("campaigns")
+}
+
+model AbTest {
+  id          String   @id @default(cuid())
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  variantName String
+  subject     String
+  percentage  Int      @default(50)
+  sent        Int      @default(0)
+  opened      Int      @default(0)
+  winner      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@map("ab_tests")
+}
+
+// ─── Contacts ─────────────────────────────────────────────────────────────────
+
+model Contact {
+  id           String        @id @default(cuid())
+  orgId        String
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email        String
+  firstName    String?
+  lastName     String?
+  phone        String?
+  status       ContactStatus @default(SUBSCRIBED)
+  source       String?
+  customFields Json?
+  tags         String[]      @default([])
+  score        Int           @default(0)
+  lastActivity DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  listMemberships ContactListMember[]
+  emailLogs       EmailLog[]
+  formSubmissions FormSubmission[]
+  automationRuns  AutomationRun[]
+
+  @@unique([orgId, email])
+  @@index([orgId, status])
+  @@index([orgId, createdAt])
+  @@map("contacts")
+}
+
+model ContactList {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  count       Int          @default(0)
+  isDefault   Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  members     ContactListMember[]
+
+  @@map("contact_lists")
+}
+
+model ContactListMember {
+  id          String      @id @default(cuid())
+  listId      String
+  contactId   String
+  subscribedAt DateTime   @default(now())
+  list        ContactList @relation(fields: [listId], references: [id], onDelete: Cascade)
+  contact     Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([listId, contactId])
+  @@map("contact_list_members")
+}
+
+model Segment {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  conditions  Json
+  count       Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@map("segments")
+}
+
+model CustomField {
+  id        String   @id @default(cuid())
+  orgId     String
+  name      String
+  key       String
+  type      String   // text | number | date | boolean | select
+  options   String[]
+  required  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([orgId, key])
+  @@map("custom_fields")
+}
+
+// ─── Email Templates ──────────────────────────────────────────────────────────
+
+model EmailTemplate {
+  id          String       @id @default(cuid())
+  orgId       String?
+  org         Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  subject     String?
+  htmlContent String       @db.Text
+  jsonContent Json?
+  thumbnail   String?
+  category    String?
+  isDefault   Boolean      @default(false)
+  isGlobal    Boolean      @default(false)
+  usageCount  Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  campaigns   Campaign[]
+
+  @@map("email_templates")
+}
+
+// ─── Domains ──────────────────────────────────────────────────────────────────
+
+model Domain {
+  id              String       @id @default(cuid())
+  orgId           String
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  domain          String
+  status          DomainStatus @default(PENDING)
+  spfValid        Boolean      @default(false)
+  dkimValid       Boolean      @default(false)
+  dmarcValid      Boolean      @default(false)
+  mxValid         Boolean      @default(false)
+  dkimSelector    String       @default("mail")
+  dkimPublicKey   String?      @db.Text
+  dkimPrivateKey  String?      @db.Text
+  isDefault       Boolean      @default(false)
+  verifiedAt      DateTime?
+  lastCheckedAt   DateTime?
+  createdAt       DateTime     @default(now())
+
+  @@unique([orgId, domain])
+  @@map("domains")
+}
+
+// ─── SMTP Configuration ───────────────────────────────────────────────────────
+
+model SmtpConfig {
+  id           String       @id @default(cuid())
+  orgId        String
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name         String
+  host         String
+  port         Int
+  secure       Boolean      @default(true)
+  authUser     String
+  authPass     String
+  fromEmail    String
+  fromName     String
+  isActive     Boolean      @default(true)
+  isDefault    Boolean      @default(false)
+  dailyLimit   Int          @default(1000)
+  sentToday    Int          @default(0)
+  totalSent    Int          @default(0)
+  lastUsedAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@map("smtp_configs")
+}
+
+// ─── Analytics ────────────────────────────────────────────────────────────────
+
+model CampaignAnalytics {
+  id           String   @id @default(cuid())
+  campaignId   String   @unique
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sent         Int      @default(0)
+  delivered    Int      @default(0)
+  opened       Int      @default(0)
+  uniqueOpens  Int      @default(0)
+  clicked      Int      @default(0)
+  uniqueClicks Int      @default(0)
+  bounced      Int      @default(0)
+  complained   Int      @default(0)
+  unsubscribed Int      @default(0)
+  failed       Int      @default(0)
+  updatedAt    DateTime @updatedAt
+
+  @@map("campaign_analytics")
+}
+
+model EmailLog {
+  id          String         @id @default(cuid())
+  orgId       String
+  campaignId  String
+  campaign    Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId   String
+  contact     Contact        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  trackingId  String         @unique @default(cuid())
+  status      EmailLogStatus @default(QUEUED)
+  smtpConfigId String?
+  sentAt      DateTime?
+  openedAt    DateTime?
+  clickedAt   DateTime?
+  bouncedAt   DateTime?
+  bounceType  String?
+  bounceReason String?
+  userAgent   String?
+  ipAddress   String?
+  country     String?
+  city        String?
+  device      String?
+  opens       Int            @default(0)
+  clicks      Int            @default(0)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  linkClicks  LinkClick[]
+
+  @@index([campaignId])
+  @@index([contactId])
+  @@index([trackingId])
+  @@map("email_logs")
+}
+
+model LinkClick {
+  id         String   @id @default(cuid())
+  emailLogId String
+  emailLog   EmailLog @relation(fields: [emailLogId], references: [id], onDelete: Cascade)
+  url        String
+  clickedAt  DateTime @default(now())
+  userAgent  String?
+  ipAddress  String?
+
+  @@map("link_clicks")
+}
+
+// ─── Automation ───────────────────────────────────────────────────────────────
+
+model Automation {
+  id          String           @id @default(cuid())
+  orgId       String
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  status      AutomationStatus @default(DRAFT)
+  triggerType TriggerType
+  triggerConfig Json?
+  nodes       Json
+  edges       Json
+  version     Int              @default(1)
+  enrolledCount Int            @default(0)
+  completedCount Int           @default(0)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  runs        AutomationRun[]
+
+  @@map("automations")
+}
+
+model AutomationRun {
+  id           String    @id @default(cuid())
+  automationId String
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  contactId    String
+  contact      Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  currentNodeId String?
+  status       String    @default("running") // running | completed | failed | cancelled
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+  metadata     Json?
+
+  @@index([automationId])
+  @@index([contactId])
+  @@map("automation_runs")
+}
+
+// ─── Forms & Landing Pages ────────────────────────────────────────────────────
+
+model Form {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  fields      Json
+  settings    Json?
+  listId      String?
+  embedCode   String?
+  submissions Int          @default(0)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  formSubmissions FormSubmission[]
+
+  @@map("forms")
+}
+
+model FormSubmission {
+  id        String   @id @default(cuid())
+  formId    String
+  form      Form     @relation(fields: [formId], references: [id], onDelete: Cascade)
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  data      Json
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@map("form_submissions")
+}
+
+// ─── Billing ──────────────────────────────────────────────────────────────────
+
+model Subscription {
+  id                   String       @id @default(cuid())
+  orgId                String       @unique
+  org                  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan                 PlanTier
+  status               SubStatus    @default(ACTIVE)
+  stripeSubscriptionId String?      @unique
+  stripeCustomerId     String?
+  stripePriceId        String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean      @default(false)
+  trialEnd             DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  @@map("subscriptions")
+}
+
+model Invoice {
+  id          String   @id @default(cuid())
+  orgId       String
+  stripeInvoiceId String? @unique
+  amount      Int
+  currency    String   @default("usd")
+  status      String
+  paidAt      DateTime?
+  invoiceUrl  String?
+  invoicePdf  String?
+  createdAt   DateTime @default(now())
+
+  @@map("invoices")
+}
+
+// ─── API Keys ─────────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId      String?
+  name        String
+  keyHash     String       @unique
+  keyPrefix   String
+  permissions String[]     @default([])
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime     @default(now())
+
+  @@map("api_keys")
+}
+
+// ─── Audit Logs ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String       @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime     @default(now())
+
+  @@index([orgId, createdAt])
+  @@map("audit_logs")
+}
